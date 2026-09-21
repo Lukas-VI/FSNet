@@ -1,3 +1,10 @@
+"""Desnowing 主入口：构建模型，按 mode 训练或测试。
+
+与 ITS main.py 差异：
+  1) 模型保存路径为 results/FSNet/CSD/。
+  2) 训练超参不同（num_epoch=2000，save/valid_freq=50）。
+  3) 无 numpy/random 导入（当前未实际使用）。
+"""
 import os
 import torch
 import argparse
@@ -10,8 +17,9 @@ import random
 
 def main(args):
     # CUDNN
-    cudnn.benchmark = True
+    cudnn.benchmark = True  # 固定尺寸下加速卷积
 
+    # 创建运行所需目录
     if not os.path.exists('results/'):
         os.makedirs(args.model_save_dir)
     if not os.path.exists('results/' + args.model_name + '/'):
@@ -41,7 +49,7 @@ if __name__ == '__main__':
     parser.add_argument('--data_dir', type=str, default='')
     parser.add_argument('--mode', default='test', choices=['train', 'test'], type=str)
 
-    # Train
+    # Train —— Desnowing 训练超参数
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--learning_rate', type=float, default=8e-4)
     parser.add_argument('--weight_decay', type=float, default=0)
@@ -57,10 +65,11 @@ if __name__ == '__main__':
     parser.add_argument('--save_image', type=bool, default=False, choices=[True, False])
 
     args = parser.parse_args()
-    args.model_save_dir = os.path.join('results/', 'FSNet', 'CSD/')
+    args.model_save_dir = os.path.join('results/', 'FSNet', 'CSD/')  # CSD 雪数据集路径
     args.result_dir = os.path.join('results/', args.model_name, 'test')
     if not os.path.exists(args.model_save_dir):
         os.makedirs(args.model_save_dir)
+    # 复制关键源码到模型保存目录，便于追溯实验代码版本
     command = 'cp ' + 'models/layers.py ' + args.model_save_dir
     os.system(command)
     command = 'cp ' + 'models/FSNet.py ' + args.model_save_dir

@@ -10,18 +10,27 @@ import torch.nn as nn
 from warmup_scheduler import GradualWarmupScheduler
 
 def _train(model, args):
+    """FSNet 训练主函数（OTS 版本，去雾）。
+
+    与 ITS 版本差异：
+      1) warmup 仅 1 个 epoch（ITS 为 3）。
+      2) 梯度裁剪阈值为 0.01（ITS 为 0.001）。
+      3) 额外增加"迭代内"周期验证逻辑（eval_now，每 max_iter//6 个迭代验证一次），
+         前 20 个 epoch 只在指定条件触发。
+    """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     criterion = torch.nn.L1Loss()
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, betas=(0.9, 0.999), eps=1e-8)
     dataloader = train_dataloader(args.data_dir, args.batch_size, args.num_worker)
     max_iter = len(dataloader)
-    warmup_epochs=1
+    warmup_epochs=1   # 学习率预热 epoch 数（比 ITS 少）
     scheduler_cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.num_epoch-warmup_epochs, eta_min=1e-6)
     scheduler = GradualWarmupScheduler(optimizer, multiplier=1, total_epoch=warmup_epochs, after_scheduler=scheduler_cosine)
     scheduler.step()
     epoch = 1
     if args.resume:
+        # 断点续训
         state = torch.load(args.resume)
         epoch = state['epoch']
         optimizer.load_state_dict(state['optimizer'])
@@ -38,6 +47,7 @@ def _train(model, args):
     iter_timer = Timer('m')
     best_psnr=-1
 
+    # 迭代内验证频率：每个 epoch 里每 6 分之一个数据量验证一次
     eval_now = max_iter//6-1
 
     for epoch_idx in range(epoch, args.num_epoch + 1):
@@ -52,13 +62,15 @@ def _train(model, args):
 
             optimizer.zero_grad()
             pred_img = model(input_img)
+            # GT 缩到对应尺度与各级预测对齐
             label_img2 = F.interpolate(label_img, scale_factor=0.5, mode='bilinear')
             label_img4 = F.interpolate(label_img, scale_factor=0.25, mode='bilinear')
             l1 = criterion(pred_img[0], label_img4)
             l2 = criterion(pred_img[1], label_img2)
             l3 = criterion(pred_img[2], label_img)
-            loss_content = l1+l2+l3
+            loss_content = l1+l2+l3  # 空间域多尺度 L1
 
+            # ---- 频域 FFT 损失（与 ITS 一致，逐尺度对实部/虚部做 L1）----
             label_fft1 = torch.fft.fft2(label_img4, dim=(-2,-1))
             label_fft1 = torch.stack((label_fft1.real, label_fft1.imag), -1)
 
@@ -84,7 +96,7 @@ def _train(model, args):
 
             loss = loss_content + 0.1 * loss_fft
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.01)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.01)  # 梯度裁剪（阈值 0.01）
             optimizer.step()
 
             iter_pixel_adder(loss_content.item())
@@ -94,19 +106,20 @@ def _train(model, args):
             epoch_fft_adder(loss_fft.item())
 
             if (iter_idx + 1) % args.print_freq == 0:
+                # 定期打印进度并写入 tensorboard
                 print("Time: %7.4f Epoch: %03d Iter: %4d/%4d LR: %.10f Loss content: %7.4f Loss fft: %7.4f" % (
                     iter_timer.toc(), epoch_idx, iter_idx + 1, max_iter, scheduler.get_lr()[0], iter_pixel_adder.average(),
                     iter_fft_adder.average()))
                 writer.add_scalar('Pixel Loss', iter_pixel_adder.average(), iter_idx + (epoch_idx-1)* max_iter)
                 writer.add_scalar('FFT Loss', iter_fft_adder.average(), iter_idx + (epoch_idx - 1) * max_iter)
-                
+
                 iter_timer.tic()
                 iter_pixel_adder.reset()
                 iter_fft_adder.reset()
 
-
+            # ---- 迭代内验证（OTS 特有）----
             if iter_idx%eval_now==0 and iter_idx>0 and (epoch_idx>20 or epoch_idx == 1):
-
+                # 保存当前快照并做一次验证，有提升则更新 Best
                 save_name = os.path.join(args.model_save_dir, 'model_%d_%d.pkl' % (epoch_idx, iter_idx))
                 torch.save({'model': model.state_dict()}, save_name)
 
@@ -117,6 +130,7 @@ def _train(model, args):
                     torch.save({'model': model.state_dict()}, os.path.join(args.model_save_dir, 'Best.pkl'))
 
 
+        # ---- 每 epoch 结束保存 ----
         overwrite_name = os.path.join(args.model_save_dir, 'model.pkl')
         torch.save({'model': model.state_dict()}, overwrite_name)
 
@@ -130,6 +144,7 @@ def _train(model, args):
         epoch_pixel_adder.reset()
         scheduler.step()
 
+        # ---- 每 valid_freq epoch 验证一次 ----
         if epoch_idx % args.valid_freq == 0:
             val = _valid(model, args, epoch_idx)
             print('%03d epoch \n Average PSNR %.2f dB' % (epoch_idx, val))

@@ -7,8 +7,10 @@ from train import _train
 from eval import _eval
 
 def main(args):
+    """入口函数：构建模型，按 mode 训练或测试（Motion Deblurring / GoPro 版本）。"""
     cudnn.benchmark = True
 
+    # 创建运行所需目录
     if not os.path.exists('results/'):
         os.makedirs(args.model_save_dir)
     if not os.path.exists('results/' + args.model_name + '/'):
@@ -18,7 +20,7 @@ def main(args):
     if not os.path.exists(args.result_dir):
         os.makedirs(args.result_dir)
     model = build_net()
-    # print(model)
+    # print(model)   # 原实现注掉了模型结构打印
 
     if torch.cuda.is_available():
         model.cuda()
@@ -37,11 +39,11 @@ if __name__ == '__main__':
     parser.add_argument('--mode', default='test', choices=['train', 'test'], type=str)
 
 
-    # Train
+    # Train —— GoPro 训练超参数（batch 小、epoch 多）
     parser.add_argument('--batch_size', type=int, default=4)
     parser.add_argument('--learning_rate', type=float, default=1e-4)
     parser.add_argument('--weight_decay', type=float, default=0)
-    parser.add_argument('--num_epoch', type=int, default=3000) # rsblur:710
+    parser.add_argument('--num_epoch', type=int, default=3000) # rsblur:710  （注释示意若用于 RSBlur 可设 710）
     parser.add_argument('--print_freq', type=int, default=100)
     parser.add_argument('--num_worker', type=int, default=8)
     parser.add_argument('--save_freq', type=int, default=100)
@@ -53,6 +55,7 @@ if __name__ == '__main__':
     parser.add_argument('--save_image', type=bool, default=False, choices=[True, False])
 
     args = parser.parse_args()
+    # GoPro 任务模型保存路径
     args.model_save_dir = os.path.join('results/', 'FSNet', 'GoPro/')
     args.result_dir = os.path.join('results/', args.model_name, 'test')
 
@@ -60,6 +63,7 @@ if __name__ == '__main__':
     if not os.path.exists(args.model_save_dir):
         os.makedirs(args.model_save_dir)
 
+    # 复制关键源码到模型保存目录
     command = 'cp ' + 'models/layers.py ' + args.model_save_dir
     os.system(command)
     command = 'cp ' + 'models/FSNet.py ' + args.model_save_dir

@@ -8,6 +8,7 @@ import torch.nn.functional as f
 
 
 def _valid(model, args, ep):
+    """训练过程中周期验证：在验证集上算平均 PSNR（Desnowing 版本，变量名 snow）。"""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     snow = valid_dataloader(args.data_dir, batch_size=1, num_workers=0)
     model.eval()
@@ -20,17 +21,19 @@ def _valid(model, args, ep):
             input_img, label_img = data
             input_img = input_img.to(device)
 
+            # 补齐到 factor 整数倍
             h, w = input_img.shape[2], input_img.shape[3]
             H, W = ((h+factor)//factor)*factor, ((w+factor)//factor*factor)
             padh = H-h if h%factor!=0 else 0
             padw = W-w if w%factor!=0 else 0
             input_img = f.pad(input_img, (0, padw, 0, padh), 'reflect')
 
+            # 每个验证 epoch 建一个结果子目录（此版本尚未实际保存图）
             if not os.path.exists(os.path.join(args.result_dir, '%d' % (ep))):
                 os.mkdir(os.path.join(args.result_dir, '%d' % (ep)))
 
-            pred = model(input_img)[2]
-            pred = pred[:,:,:h,:w]
+            pred = model(input_img)[2]   # 原分辨率输出
+            pred = pred[:,:,:h,:w]      # 裁掉填充
 
             pred_clip = torch.clamp(pred, 0, 1)
             p_numpy = pred_clip.squeeze(0).cpu().numpy()
@@ -39,8 +42,8 @@ def _valid(model, args, ep):
             psnr = peak_signal_noise_ratio(p_numpy, label_numpy, data_range=1)
 
             psnr_adder(psnr)
-            print('\r%03d'%idx, end=' ')
+            print('\r%03d'%idx, end=' ')  # 进度打印
 
     print('\n')
-    model.train()
+    model.train()  # 验证完切回训练
     return psnr_adder.average()

@@ -7,6 +7,7 @@ from skimage.metrics import peak_signal_noise_ratio
 import torch.nn.functional as f
 
 def _valid(model, args, ep):
+    """训练过程中周期验证：在 GoPro 验证集上算平均 PSNR（变量名 gopro）。"""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     gopro = valid_dataloader(args.data_dir, batch_size=1, num_workers=0)
     model.eval()
@@ -19,12 +20,14 @@ def _valid(model, args, ep):
             input_img, label_img = data
             input_img = input_img.to(device)
 
+            # 补齐到 factor 整数倍
             h, w = input_img.shape[2], input_img.shape[3]
             H, W = ((h+factor)//factor)*factor, ((w+factor)//factor*factor)
             padh = H-h if h%factor!=0 else 0
             padw = W-w if w%factor!=0 else 0
             input_img = f.pad(input_img, (0, padw, 0, padh), 'reflect')
 
+            # 每个验证 epoch 建一个结果子目录
             if not os.path.exists(os.path.join(args.result_dir, '%d' % (ep))):
                 os.mkdir(os.path.join(args.result_dir, '%d' % (ep)))
 

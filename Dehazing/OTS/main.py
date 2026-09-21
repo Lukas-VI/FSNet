@@ -7,9 +7,11 @@ from train import _train
 from eval import _eval
 
 def main(args):
+    """入口函数：构建模型，按 mode 选择训练或测试（OTS 版本）。"""
     # CUDNN
     cudnn.benchmark = True
 
+    # 创建结果/模型/输出目录
     if not os.path.exists('results/'):
         os.makedirs(args.model_save_dir)
     if not os.path.exists('results/' + args.model_name + '/'):
@@ -39,7 +41,7 @@ if __name__ == '__main__':
     parser.add_argument('--data_dir', type=str, default='')
     parser.add_argument('--mode', default='test', choices=['train', 'test'], type=str)
 
-    # Train
+    # Train —— OTS 训练超参数
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--learning_rate', type=float, default=1e-4)
     parser.add_argument('--weight_decay', type=float, default=0)
@@ -56,10 +58,12 @@ if __name__ == '__main__':
     parser.add_argument('--save_image', type=bool, default=False, choices=[True, False])
 
     args = parser.parse_args()
+    # 固定模型/结果保存路径（OTS 任务）
     args.model_save_dir = os.path.join('results/', 'FSNet', 'ots/')
     args.result_dir = os.path.join('results/', args.model_name, 'test')
     if not os.path.exists(args.model_save_dir):
         os.makedirs(args.model_save_dir)
+    # 把关键源码复制到模型保存目录，便于追溯实验代码版本
     command = 'cp ' + 'models/layers.py ' + args.model_save_dir
     os.system(command)
     command = 'cp ' + 'models/FSNet.py ' + args.model_save_dir

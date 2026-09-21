@@ -7,13 +7,17 @@ from skimage.metrics import peak_signal_noise_ratio
 import torch.nn.functional as f
 
 def _eval(model, args):
+    """测试（评估）主函数（Motion Deblurring / GoPro 版本）。
+
+    与去雾版本差异：只计算 PSNR（不计算 SSIM），因此更简洁。
+    """
     state_dict = torch.load(args.test_model)
     model.load_state_dict(state_dict['model'])
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     dataloader = test_dataloader(args.data_dir, batch_size=1, num_workers=0)
     torch.cuda.empty_cache()
     model.eval()
-    factor = 8
+    factor = 8  # 尺寸对齐因子
 
     with torch.no_grad():
         psnr_adder = Adder()
@@ -22,26 +26,28 @@ def _eval(model, args):
             input_img, label_img, name = data
             input_img = input_img.to(device)
 
+            # 补齐到 factor 整数倍
             h, w = input_img.shape[2], input_img.shape[3]
             H, W = ((h+factor)//factor)*factor, ((w+factor)//factor*factor)
             padh = H-h if h%factor!=0 else 0
             padw = W-w if w%factor!=0 else 0
             input_img = f.pad(input_img, (0, padw, 0, padh), 'reflect')
-            
-            pred = model(input_img)[2]
-            pred = pred[:,:,:h,:w]
+
+            pred = model(input_img)[2]   # 原分辨率输出
+            pred = pred[:,:,:h,:w]      # 裁掉填充
 
             pred_clip = torch.clamp(pred, 0, 1)
 
             pred_numpy = pred_clip.squeeze(0).cpu().numpy()
             label_numpy = label_img.squeeze(0).cpu().numpy()
 
+            # 可选：保存复原图
             if args.save_image:
                 save_name = os.path.join(args.result_dir, name[0])
                 pred_clip += 0.5 / 255
                 pred = F.to_pil_image(pred_clip.squeeze(0).cpu(), 'RGB')
                 pred.save(save_name)
-            
+
             psnr = peak_signal_noise_ratio(pred_numpy, label_numpy, data_range=1)
             psnr_adder(psnr)
 
@@ -49,4 +55,3 @@ def _eval(model, args):
 
         print('==========================================================')
         print('The average PSNR is %.2f dB' % (psnr_adder.average()))
-

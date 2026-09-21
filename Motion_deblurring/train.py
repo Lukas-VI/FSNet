@@ -9,12 +9,17 @@ from warmup_scheduler import GradualWarmupScheduler
 
 
 def _train(model, args):
+    """FSNet 训练主函数（Motion Deblurring / GoPro 版本）。
+
+    与 ITS 版本差异：梯度裁剪阈值为 0.01；验证只记录'GOPRO'的 PSNR；
+    且不 import nn（未使用）。
+    """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     criterion = torch.nn.L1Loss()
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, betas=(0.9, 0.999), eps=1e-8)
     dataloader = train_dataloader(args.data_dir, args.batch_size, args.num_worker)
-    max_iter = len(dataloader)
+    max_iter = len(dataloader)   # 一个 epoch 内的迭代数
 
     warmup_epochs=3
     scheduler_cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.num_epoch-warmup_epochs, eta_min=1e-6)
@@ -22,6 +27,7 @@ def _train(model, args):
     scheduler.step()
     epoch = 1
     if args.resume:
+        # 断点续训
         state = torch.load(args.resume)
         epoch = state['epoch']
         optimizer.load_state_dict(state['optimizer'])
@@ -50,13 +56,15 @@ def _train(model, args):
 
             optimizer.zero_grad()
             pred_img = model(input_img)
+            # GT 缩到对应尺度
             label_img2 = F.interpolate(label_img, scale_factor=0.5, mode='bilinear')
             label_img4 = F.interpolate(label_img, scale_factor=0.25, mode='bilinear')
             l1 = criterion(pred_img[0], label_img4)
             l2 = criterion(pred_img[1], label_img2)
             l3 = criterion(pred_img[2], label_img)
-            loss_content = l1+l2+l3
+            loss_content = l1+l2+l3   # 空间域多尺度 L1
 
+            # ---- 频域 FFT 损失 ----
             label_fft1 = torch.fft.fft2(label_img4, dim=(-2,-1))
             label_fft1 = torch.stack((label_fft1.real, label_fft1.imag), -1)
 
@@ -82,7 +90,7 @@ def _train(model, args):
 
             loss = loss_content + 0.1 * loss_fft
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.01)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.01)  # 梯度裁剪 0.01
             optimizer.step()
 
             iter_pixel_adder(loss_content.item())
@@ -92,15 +100,17 @@ def _train(model, args):
             epoch_fft_adder(loss_fft.item())
 
             if (iter_idx + 1) % args.print_freq == 0:
+                # 定期打印并写入 tensorboard
                 print("Time: %7.4f Epoch: %03d Iter: %4d/%4d LR: %.10f Loss content: %7.4f Loss fft: %7.4f" % (
                     iter_timer.toc(), epoch_idx, iter_idx + 1, max_iter, scheduler.get_lr()[0], iter_pixel_adder.average(),
                     iter_fft_adder.average()))
                 writer.add_scalar('Pixel Loss', iter_pixel_adder.average(), iter_idx + (epoch_idx-1)* max_iter)
                 writer.add_scalar('FFT Loss', iter_fft_adder.average(), iter_idx + (epoch_idx - 1) * max_iter)
-                
+
                 iter_timer.tic()
                 iter_pixel_adder.reset()
                 iter_fft_adder.reset()
+        # ---- 每 epoch 结束保存 ----
         overwrite_name = os.path.join(args.model_save_dir, 'model.pkl')
         torch.save({'model': model.state_dict(),
                     'optimizer': optimizer.state_dict(),
@@ -114,6 +124,8 @@ def _train(model, args):
         epoch_fft_adder.reset()
         epoch_pixel_adder.reset()
         scheduler.step()
+
+        # ---- 周期性验证（记录为 GOPRO PSNR）----
         if epoch_idx % args.valid_freq == 0:
             val_gopro = _valid(model, args, epoch_idx)
             print('%03d epoch \n Average GOPRO PSNR %.2f dB' % (epoch_idx, val_gopro))
